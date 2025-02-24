@@ -6,6 +6,7 @@ from typing import List, Dict, Any, Optional
 from enum import Enum
 from datetime import datetime
 
+# TODO: Verify if this is being used - remove if not.
 class JobStatus(Enum):
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
