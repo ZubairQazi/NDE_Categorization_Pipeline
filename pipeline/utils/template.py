@@ -1,28 +1,30 @@
 # utils/template.py
-from typing import List, Dict, Any
 from pathlib import Path
+from typing import List, Optional
 
 class TemplateHandler:
-    def __init__(self, template_dir: str = "templates"):
-        self.template_dir = Path(template_dir)
+    def __init__(self):
+        # Store template directory relative to this file
+        self.template_dir = Path(__file__).parent / "templates"
+        self.topics_dir = Path(__file__).parent / "topics"
 
     def load_template(self, template_name: str) -> str:
-        """Load a template from file"""
+        """Load template from file"""
         template_path = self.template_dir / template_name
-        if not template_path.exists():
-            raise FileNotFoundError(f"Template not found: {template_path}")
-        
-        return template_path.read_text()
+        try:
+            with open(template_path, "r") as f:
+                return f.read()
+        except FileNotFoundError:
+            raise ValueError(f"Template file not found: {template_path}")
 
     def load_topics(self, topics_file: str) -> List[str]:
         """Load topics from file"""
-        topics_path = Path(topics_file)
-        if not topics_path.exists():
-            raise FileNotFoundError(f"Topics file not found: {topics_path}")
-        
-        with open(topics_path, "r") as f:
-            topics = [line.strip() for line in f.readlines()]
-        return topics
+        topics_path = self.topics_dir / topics_file
+        try:
+            with open(topics_path, "r") as f:
+                return [line.strip() for line in f if line.strip()]
+        except FileNotFoundError:
+            raise ValueError(f"Topics file not found: {topics_path}")
 
     def format_template(self, template: str, topics: List[str], **kwargs) -> str:
         """Format template with topics and other parameters"""
@@ -34,3 +36,11 @@ class TemplateHandler:
             template = template.replace(f"<{key}>", str(value))
             
         return template
+    
+if __name__ == "__main__":
+    template_handler = TemplateHandler()
+    template = template_handler.load_template("prompt_template.txt")
+    topics = template_handler.load_topics("edam_topics.txt")
+    formatted_template = template_handler.format_template(template, topics)
+
+    print(formatted_template)
