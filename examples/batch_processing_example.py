@@ -1,15 +1,24 @@
 import asyncio
 from pathlib import Path
-from pipeline.utils.config import Config
-from pipeline.utils.template import TemplateHandler
-from pipeline.input.csv_input import CSVInput
-from pipeline.llm.openai_provider import OpenAIProvider
 import json
 from datetime import datetime
+from pipeline import (
+    Config, 
+    ColumnMappingsConfig,
+    TemplateHandler,
+    CSVInput,
+    JSONInput,
+    OpenAIProvider,
+    TextItem,
+)
 
 async def main(dataset_path: str, dataset_name: str):
-    # Load configuration
-    config = Config("config.json")
+    # Load configurations
+    config = Config()
+    column_mappings = ColumnMappingsConfig()
+    
+    # Get dataset-specific mappings
+    dataset_config = column_mappings.get_dataset_config(dataset_name)
     
     # Initialize OpenAI provider
     provider = OpenAIProvider(
@@ -21,10 +30,8 @@ async def main(dataset_path: str, dataset_name: str):
     # Load template and topics
     template_handler = TemplateHandler()
     template = template_handler.load_template("prompt_template.txt")
-    topics = template_handler.load_topics("topics/edam_topics.txt")
-    
-    # Format template with topics
-    formatted_template = template_handler.format_template(template, topics)
+    topics = template_handler.load_topics("edam_topics.txt")
+    formatted_template = template_handler.format_template(template, topics)     # Format template with topics
     
     # Check for existing batches
     can_proceed = await provider.check_existing_batches()
@@ -32,10 +39,39 @@ async def main(dataset_path: str, dataset_name: str):
         print("Existing batches found. Please check and try again.")
         return
 
-    items = CSVInput(dataset_path, text_columns=["Name", "Description"]).get_text_items()
+    # Load data with mappings from config
+    if dataset_path.lower().endswith('.csv'):
+        items = CSVInput(
+            filepath=dataset_path,
+            text_columns=dataset_config["text_columns"],
+            metadata_mapping=dataset_config["metadata_mapping"]
+        ).get_text_items()
+    elif dataset_path.lower().endswith('.json'):
+        items = JSONInput(
+            filepath=dataset_path,
+            text_columns=dataset_config["text_columns"],
+            metadata_mapping=dataset_config["metadata_mapping"]
+        ).get_text_items()
+    else:
+        raise ValueError("Unsupported file format. Please provide a CSV or JSON file.")
     
-    # Submit batch with unique name
-    batch_ids = await provider.submit_batch(items, formatted_template, f"batch_{dataset_name}")
+    # Take random length 10 subset
+    import random
+    if len(items) > 10:
+        items = random.sample(items, 10)
+    
+    # Prepare prompts for each item
+    ids, prompts = [], []
+    for item in items:
+        # Format the prompt template with item-specific data
+        prompt = formatted_template.replace("<title>", item.metadata.get("title", "No Title"))
+        prompt = prompt.replace("<abstract>", item.text)
+        
+        ids.append(item.id)
+        prompts.append(prompt)
+    
+    # Submit batch with formatted prompts
+    batch_ids = await provider.submit_batch(ids, prompts, f"batch_{dataset_name}")
     
     # Set up dataset-specific logging
     log_file = Path(f"logs/{dataset_name}_processing.log")
@@ -71,4 +107,6 @@ if __name__ == "__main__":
     
     dataset_path = sys.argv[1]
     dataset_name = sys.argv[2]
-    asyncio.run(main(dataset_path, dataset_name)) 
+    asyncio.run(main(dataset_path, dataset_name))
+
+    # Use tmux for multiple runs
