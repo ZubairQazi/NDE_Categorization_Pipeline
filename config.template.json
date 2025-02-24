@@ -1,0 +1,10 @@
+{
+  "api_keys": {
+    "openai": "YOUR_OPENAI_API_KEY",
+    "huggingface": "YOUR_HUGGINGFACE_API_KEY"
+  },
+  "project_org_ids": {
+      "openai_org": "YOUR_OPENAI_ORG_ID",
+      "openai_project": "YOUR_OPENAI_PROJECT_ID"
+    }
+}
