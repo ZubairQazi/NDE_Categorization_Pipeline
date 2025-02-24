@@ -38,15 +38,14 @@ class OpenAIProvider:
         self.encoding = tiktoken.encoding_for_model(model)
 
     async def check_existing_batches(self) -> bool:
-        """Check for existing batch jobs and return whether to proceed"""
+        """Check for existing batch jobs but do not block new batches."""
         existing_batches = self.client.batches.list()
         if existing_batches:
             running_batch_count = sum(1 for batch in existing_batches.data 
                                     if batch.status in ["in_progress", "finalizing", "validating", "cancelling"])
             if running_batch_count > 0:
                 logger.warning(f"There are {running_batch_count} running batch jobs.")
-                return False
-        return True
+        return True  # Always returns True, so it won't block
 
     def _create_batch_request(self, item: TextItem, prompt_template: str) -> Dict:
         """Create a single batch request for an item"""
@@ -138,57 +137,4 @@ class OpenAIProvider:
             return None
         else:
             # Batch still processing
-            return None
-    
-
-async def main():
-    from ..utils.config import Config
-    from ..utils.template import TemplateHandler
-    from ..input.csv_input import CSVInput
-    from ..llm.openai_provider import OpenAIProvider
-    import asyncio
-
-    # Load configuration
-    config = Config("config.json")
-    
-    # Initialize OpenAI provider
-    provider = OpenAIProvider(
-        api_key=config.openai_api_key,
-        org_id=config.openai_org_id,
-        project_id=config.openai_project_id
-    )
-    
-    # Load template and topics
-    template_handler = TemplateHandler()
-    template = template_handler.load_template("prompt_template.txt")
-    topics = template_handler.load_topics("EDAM/edam_topics.txt")
-    
-    # Format template with topics
-    formatted_template = template_handler.format_template(template, topics)
-    
-    # Check for existing batches
-    can_proceed = await provider.check_existing_batches()
-    if not can_proceed:
-        print("Existing batches found. Please check and try again.")
-        return
-
-    items = CSVInput('test.csv', text_columns=["name", "description"]).get_text_items()
-    
-    # Submit batch
-    batch_ids = await provider.submit_batch(items, formatted_template, "test_batch")
-    
-    # Monitor results
-    results = []
-    while batch_ids:
-        for batch_id in batch_ids[:]:
-            batch_results = await provider.get_batch_results(batch_id)
-            if batch_results is not None:
-                results.extend(batch_results)
-                batch_ids.remove(batch_id)
-        if batch_ids:
-            await asyncio.sleep(60)  # Check every minute
-    
-    return results
-
-if __name__ == "__main__":
-    asyncio.run(main())
+            return None 
