@@ -3,3 +3,4 @@ pipeline/tests/data
 config.json
 __pycache__
 .vscode
+.DS_Store
