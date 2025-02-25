@@ -7,6 +7,7 @@ from .utils.config import Config, ColumnMappingsConfig
 from .utils.template import TemplateHandler
 from .processors.normalizer import Normalizer
 from .processors.text_cleaner import TextCleaner
+from.processors.prompt_formatter import PromptFormatter
 from .output.csv_output import CSVOutput
 from .output.json_output import JSONOutput
 
@@ -15,6 +16,6 @@ __all__ = [
     'CSVInput', 'JSONInput',
     'OpenAIProvider',
     'Config', 'ColumnMappingsConfig', 'TemplateHandler',
-    'Normalizer', 'TextCleaner',
+    'Normalizer', 'TextCleaner', 'PromptFormatter',
     'CSVOutput', 'JSONOutput'
 ]
