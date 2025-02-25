@@ -1,101 +1,110 @@
-# core/data_model.py
-
-# Pipeline orchestration
-from dataclasses import dataclass
-from typing import List, Dict, Any, Optional
-from enum import Enum
+# core/pipeline.py
+from typing import List, Optional, Type, Literal
+import asyncio
 from datetime import datetime
 
-class JobStatus(Enum):
-    PENDING = "pending"
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
-    FAILED = "failed"
+from .data_model import TextItem, CategoryResult, BatchJob, JobStatus
+from ..input.base import DataInput
+from ..llm.base import LLMProvider
+from ..processors.base import DataProcessor
+from ..output.base import DataOutput
+from ..utils.logging import get_logger
 
-@dataclass
-class TextItem:
-    id: str
-    text: str
-    metadata: Optional[Dict[str, Any]] = None
+logger = get_logger(__name__)
 
-@dataclass
-class CategoryResult:
-    id: str
-    categories: List[str]
-    confidence_scores: Optional[Dict[str, float]] = None
-    model_response: Optional[Dict[str, Any]] = None
-    processed_at: datetime = None
+class Pipeline:
+    def __init__(
+        self,
+        input_handler: DataInput,
+        llm_provider: LLMProvider,
+        output_handler: DataOutput,
+        processors: Optional[List[DataProcessor]] = None,
+        categories: List[str] = None,
+        batch_size: int = 100,
+        max_retries: int = 3,
+        retry_delay: int = 5,
+        mode: Literal["sync", "batch"] = "batch"
+    ):
+        self.input_handler = input_handler
+        self.llm_provider = llm_provider
+        self.output_handler = output_handler
+        self.processors = processors or []
+        self.categories = categories
+        self.batch_size = batch_size
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+        self.mode = mode
+        self.active_jobs: List[BatchJob] = []
 
-@dataclass
-class BatchJob:
-    job_id: str
-    status: JobStatus
-    items: List[TextItem]
-    results: Optional[List[CategoryResult]] = None
-    created_at: datetime = None
-    completed_at: Optional[datetime] = None
-    error_message: Optional[str] = None
+    def _process_input(self, items: List[TextItem]) -> List[TextItem]:
+        """Apply all input processors to the data"""
+        processed_items = items
+        for processor in self.processors:
+            processed_items = processor.process_input(processed_items)
+        return processed_items
 
-# input/base.py
-from abc import ABC, abstractmethod
-from typing import Iterator, List
-from .data_model import TextItem
+    def _process_output(self, results: List[CategoryResult]) -> List[CategoryResult]:
+        """Apply all output processors to the results"""
+        processed_results = results
+        for processor in self.processors:
+            processed_results = processor.process_output(processed_results)
+        return processed_results
 
-class DataInput(ABC):
-    @abstractmethod
-    def read(self) -> Iterator[TextItem]:
-        """Read data from source and yield TextItems"""
-        pass
-    
-    @abstractmethod
-    def validate(self) -> bool:
-        """Validate input source"""
-        pass
+    async def process_items(self, items: List[TextItem]) -> Optional[List[CategoryResult]]:
+        """Process items based on selected mode"""
+        processed_items = self._process_input(items)
+        
+        for attempt in range(self.max_retries):
+            try:
+                if self.mode == "sync":
+                    # Process synchronously
+                    results = await self.llm_provider.categorize(processed_items, self.categories)
+                else:
+                    # Process as batch
+                    ids = [item.id for item in processed_items]
+                    prompts = [item.text for item in processed_items]
+                    batch_name = f"batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                    
+                    batch_ids = await self.llm_provider.submit_batch(ids, prompts, batch_name)
+                    results = []
+                    
+                    # Wait for batch completion
+                    for batch_id in batch_ids:
+                        while True:
+                            batch_results = await self.llm_provider.get_batch_results(batch_id)
+                            if batch_results is not None:
+                                results.extend(batch_results)
+                                break
+                            await asyncio.sleep(self.retry_delay)
+                
+                return self._process_output(results)
+                
+            except Exception as e:
+                if attempt == self.max_retries - 1:
+                    logger.error(f"Failed to process items after {self.max_retries} attempts: {e}")
+                    raise
+                await asyncio.sleep(self.retry_delay)
 
-# llm/base.py
-from abc import ABC, abstractmethod
-from typing import List, Optional
-from .data_model import TextItem, CategoryResult, BatchJob
-
-class LLMProvider(ABC):
-    @abstractmethod
-    async def categorize(self, items: List[TextItem], categories: List[str]) -> List[CategoryResult]:
-        """Synchronously categorize items"""
-        pass
-    
-    @abstractmethod
-    async def submit_batch(self, items: List[TextItem], categories: List[str]) -> BatchJob:
-        """Submit items for batch processing"""
-        pass
-    
-    @abstractmethod
-    async def get_batch_results(self, job: BatchJob) -> Optional[List[CategoryResult]]:
-        """Retrieve results for a batch job"""
-        pass
-
-# processors/base.py
-from abc import ABC, abstractmethod
-from typing import List
-from .data_model import TextItem, CategoryResult
-
-class DataProcessor(ABC):
-    @abstractmethod
-    def process_input(self, items: List[TextItem]) -> List[TextItem]:
-        """Process input data before categorization"""
-        pass
-    
-    @abstractmethod
-    def process_output(self, results: List[CategoryResult]) -> List[CategoryResult]:
-        """Process results after categorization"""
-        pass
-
-# output/base.py
-from abc import ABC, abstractmethod
-from typing import List
-from .data_model import CategoryResult
-
-class DataOutput(ABC):
-    @abstractmethod
-    def write(self, results: List[CategoryResult]) -> None:
-        """Write results to output destination"""
-        pass
+    async def run(self) -> None:
+        """Run the pipeline"""
+        if not self.categories:
+            raise ValueError("Categories must be specified")
+        
+        if not self.input_handler.validate():
+            raise ValueError("Invalid input source")
+        
+        batch = []
+        for item in self.input_handler.read():
+            batch.append(item)
+            
+            if len(batch) >= self.batch_size:
+                results = await self.process_items(batch)
+                if results:
+                    self.output_handler.write(results)
+                batch = []
+        
+        # Process remaining items
+        if batch:
+            results = await self.process_items(batch)
+            if results:
+                self.output_handler.write(results)
