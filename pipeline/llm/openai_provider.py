@@ -8,12 +8,13 @@ from pathlib import Path
 import json
 import tiktoken
 from openai import OpenAI
+from .base import LLMProvider
 from ..core.data_model import TextItem, CategoryResult, BatchJob, JobStatus
 from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-class OpenAIProvider:
+class OpenAIProvider(LLMProvider):
     def __init__(
         self,
         api_key: str,
@@ -130,7 +131,7 @@ class OpenAIProvider:
                         response_data = json.loads(line)
                         item_id = response_data['custom_id']
                         model_response = response_data['response']['body']['choices'][0]['message']['content']
-                        
+
                         # Create CategoryResult object
                         result = CategoryResult(
                             id=item_id,
@@ -157,4 +158,29 @@ class OpenAIProvider:
                 
         except Exception as e:
             logger.error(f"Error retrieving batch results: {e}")
-            return None 
+            return None
+
+    async def categorize(self, items: List[TextItem], categories: List[str]) -> List[CategoryResult]:
+        """Synchronously categorize items using OpenAI API"""
+        results = []
+        for item in items:
+            try:
+                response = await self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": item.text}],
+                    max_tokens=self.max_tokens
+                )
+                
+                result = CategoryResult(
+                    id=item.id,
+                    categories=[],  # Will be parsed from response
+                    model_response={"raw_response": response.choices[0].message.content},
+                    processed_at=datetime.now()
+                )
+                results.append(result)
+                
+            except Exception as e:
+                logger.error(f"Error categorizing item {item.id}: {e}")
+                continue
+                
+        return results 
