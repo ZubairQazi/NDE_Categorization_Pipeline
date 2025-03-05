@@ -18,35 +18,39 @@ class Pipeline:
         input_handler: DataInput,
         llm_provider: LLMProvider,
         output_handler: DataOutput,
-        processors: Optional[List[DataProcessor]] = None,
+        preprocessors: Optional[List[DataProcessor]] = None,
+        postprocessors: Optional[List[DataProcessor]] = None,
         categories: List[str] = None,
         batch_size: int = 100,
         max_retries: int = 3,
         retry_delay: int = 5,
-        mode: Literal["sync", "batch"] = "batch"
+        mode: Literal["sync", "batch"] = "sync",
+        existing_batch_ids: Optional[List[str]] = None
     ):
         self.input_handler = input_handler
         self.llm_provider = llm_provider
         self.output_handler = output_handler
-        self.processors = processors or []
+        self.preprocessors = preprocessors or []
+        self.postprocessors = postprocessors or []
         self.categories = categories
         self.batch_size = batch_size
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self.mode = mode
+        self.existing_batch_ids = existing_batch_ids or []
         self.active_jobs: List[BatchJob] = []
 
     def _process_input(self, items: List[TextItem]) -> List[TextItem]:
         """Apply all input processors to the data"""
         processed_items = items
-        for processor in self.processors:
+        for processor in self.preprocessors:
             processed_items = processor.process_input(processed_items)
         return processed_items
 
     def _process_output(self, results: List[CategoryResult]) -> List[CategoryResult]:
         """Apply all output processors to the results"""
         processed_results = results
-        for processor in self.processors:
+        for processor in self.postprocessors:
             processed_results = processor.process_output(processed_results)
         return processed_results
 
@@ -54,6 +58,15 @@ class Pipeline:
         """Process items based on selected mode"""
         processed_items = self._process_input(items)
         
+        # Print items that were filtered out during processing
+        # TODO: Add warning log
+        filtered_ids = set(item.id for item in items) - set(item.id for item in processed_items)
+        if filtered_ids:
+            logger.info(f"Items filtered during processing: {filtered_ids}")
+            for item in items:
+                if item.id in filtered_ids:
+                    logger.info(f"Filtered item {item.id}: {item.text}")
+
         for attempt in range(self.max_retries):
             try:
                 if self.mode == "sync":
@@ -65,7 +78,7 @@ class Pipeline:
                     prompts = [item.text for item in processed_items]
                     batch_name = f"batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
                     
-                    batch_ids = await self.llm_provider.submit_batch(ids, prompts, batch_name)
+                    batch_ids = await self.llm_provider.batch_categorize(ids, prompts, batch_name)
                     results = []
                     
                     # Wait for batch completion
@@ -85,26 +98,61 @@ class Pipeline:
                     raise
                 await asyncio.sleep(self.retry_delay)
 
+    async def process_existing_batches(self) -> None:
+        """Process existing batch jobs without creating new ones"""
+        logger.info(f"Processing {len(self.existing_batch_ids)} existing batch jobs")
+        
+        results = []
+        for batch_id in self.existing_batch_ids:
+            logger.debug(f"Retrieving results for batch {batch_id}")
+            retry_count = 0
+            while retry_count < self.max_retries:
+                batch_results = await self.llm_provider.get_batch_results(batch_id)
+                if batch_results is not None:
+                    logger.info(f"Retrieved {len(batch_results)} results from batch {batch_id}")
+                    results.extend(batch_results)
+                    break
+                logger.debug(f"Batch {batch_id} not ready yet, retrying in {self.retry_delay} seconds")
+                await asyncio.sleep(self.retry_delay)
+                retry_count += 1
+            
+            if retry_count == self.max_retries:
+                logger.warning(f"Failed to retrieve results for batch {batch_id} after {self.max_retries} attempts")
+        
+        if results:
+            processed_results = self._process_output(results)
+            self.output_handler.write(processed_results)
+            logger.info(f"Processed and wrote {len(processed_results)} results from existing batches")
+
     async def run(self) -> None:
         """Run the pipeline"""
-        if not self.categories:
-            raise ValueError("Categories must be specified")
+        if not self.categories and not self.existing_batch_ids:
+            raise ValueError("Either categories or existing batch IDs must be specified")
         
-        if not self.input_handler.validate():
-            raise ValueError("Invalid input source")
+        # If we have existing batch IDs, process those first
+        if self.existing_batch_ids:
+            await self.process_existing_batches()
+            # If we only want to process existing batches, return early
+            if not self.input_handler or self.mode != "batch":
+                return
         
-        batch = []
-        for item in self.input_handler.read():
-            batch.append(item)
+        # Continue with normal pipeline processing if input handler is provided
+        if self.input_handler:
+            if not self.input_handler.validate():
+                raise ValueError("Invalid input source")
             
-            if len(batch) >= self.batch_size:
+            batch = []
+            for item in self.input_handler.read():
+                batch.append(item)
+                
+                if len(batch) >= self.batch_size:
+                    results = await self.process_items(batch)
+                    if results:
+                        self.output_handler.write(results)
+                    batch = []
+            
+            # Process remaining items
+            if batch:
                 results = await self.process_items(batch)
                 if results:
                     self.output_handler.write(results)
-                batch = []
-        
-        # Process remaining items
-        if batch:
-            results = await self.process_items(batch)
-            if results:
-                self.output_handler.write(results)
