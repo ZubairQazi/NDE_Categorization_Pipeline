@@ -36,9 +36,12 @@ class TextCleaner(DataProcessor):
 
     def clean_text(self, text: str) -> str:
         """Clean a single text string"""
-        if not text:
-            return text
-
+        if text is None or text == '':
+            return "No text provided"
+        
+        # Convert to string if not already
+        text = str(text)
+        
         if self.remove_urls:
             text = self.url_pattern.sub(' ', text)
             
@@ -60,7 +63,10 @@ class TextCleaner(DataProcessor):
         """Clean text before processing"""
         for item in items:
             item.text = self.clean_text(item.text)
-        return [item for item in items if item.text]  # Remove empty items
+            # Replace empty text with placeholder instead of filtering out
+            if not item.text:
+                item.text = "No text provided"
+        return items  # Return all items, including those with placeholder text
 
     def process_output(self, results: List[CategoryResult]) -> List[CategoryResult]:
         """Pass through results unchanged"""
