@@ -15,7 +15,7 @@ class LLMProvider(ABC):
         pass
 
     @abstractmethod
-    async def submit_batch(self, ids: List[str], prompts: List[str], batch_name: str) -> List[str]:
+    async def batch_categorize(self, ids: List[str], prompts: List[str], batch_name: str) -> List[str]:
         """Submit items for batch processing"""
         pass
 

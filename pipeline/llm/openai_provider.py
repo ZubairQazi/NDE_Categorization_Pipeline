@@ -69,7 +69,7 @@ class OpenAIProvider(LLMProvider):
             },
         }
 
-    async def submit_batch(self, ids: List[str], prompts: List[str], batch_name: str) -> List[str]:
+    async def batch_categorize(self, ids: List[str], prompts: List[str], batch_name: str) -> List[str]:
         """Submit items for batch processing"""
         batch_ids = []
         
@@ -131,12 +131,21 @@ class OpenAIProvider(LLMProvider):
                         response_data = json.loads(line)
                         item_id = response_data['custom_id']
                         model_response = response_data['response']['body']['choices'][0]['message']['content']
-
+                        
+                        # Extract model name
+                        model_name = response_data['response']['body'].get('model', self.model)
+                        # Extract logprobs if available
+                        logprobs = response_data['response']['body']['choices'][0].get('logprobs', None)
+                        
                         # Create CategoryResult object
                         result = CategoryResult(
                             id=item_id,
                             categories=[],  # Will be parsed from model_response
-                            model_response={"raw_response": model_response},
+                            model_response={
+                                "raw_response": model_response,
+                                "model_name": model_name
+                            },
+                            confidence_scores=logprobs,  # Add logprobs as confidence scores
                             processed_at=datetime.now()
                         )
                         results.append(result)
@@ -168,13 +177,21 @@ class OpenAIProvider(LLMProvider):
                 response = await self.client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "user", "content": item.text}],
-                    max_tokens=self.max_tokens
+                    max_tokens=self.max_tokens,
+                    logprobs=True  # Request logprobs
                 )
+                
+                # Extract logprobs if available
+                logprobs = response.choices[0].get('logprobs', None)
                 
                 result = CategoryResult(
                     id=item.id,
                     categories=[],  # Will be parsed from response
-                    model_response={"raw_response": response.choices[0].message.content},
+                    model_response={
+                        "raw_response": response.choices[0].message.content,
+                        "model_name": response.model
+                    },
+                    confidence_scores=logprobs,  # Add logprobs as confidence scores
                     processed_at=datetime.now()
                 )
                 results.append(result)
