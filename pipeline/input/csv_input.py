@@ -10,7 +10,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-class CSVInput:
+class CSVInput(DataInput):
     def __init__(
         self, 
         filepath: str,
