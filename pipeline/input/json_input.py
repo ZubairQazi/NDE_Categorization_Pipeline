@@ -4,8 +4,11 @@ from ..core import TextItem
 
 import pandas as pd
 import json
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Iterator
+from pathlib import Path
+import logging
 
+logger = logging.getLogger(__name__)
 
 class JSONInput(DataInput):
     def __init__(
@@ -53,18 +56,29 @@ class JSONInput(DataInput):
                 metadata[meta_key] = str(row[json_field])
         return metadata
 
-    def get_text_items(self) -> List[TextItem]:
+    def read(self) -> Iterator[TextItem]:
+        """Read JSON file and yield TextItems"""
         if "_id" not in self.dataset.columns:
             # Create sequential IDs if none provided
             self.dataset["_id"] = range(len(self.dataset))
-
+        
         self.dataset["_id"] = self.dataset["_id"].fillna("").astype(str)
-
-        return [
-            TextItem(
+        
+        for _, row in self.dataset.iterrows():
+            yield TextItem(
                 id=row["_id"],
                 text=self._combine_text(row),
                 metadata=self._extract_metadata(row)
             )
-            for _, row in self.dataset.iterrows()
-        ]
+
+    def validate(self) -> bool:
+        """Check if JSON file exists and is valid"""
+        try:
+            if not Path(self.filepath).exists():
+                return False
+            # Try reading first row to validate format
+            next(self.dataset.iterrows())
+            return True
+        except Exception as e:
+            logger.error(f"Invalid JSON file: {e}")
+            return False
