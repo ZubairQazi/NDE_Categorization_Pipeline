@@ -37,7 +37,6 @@ class Pipeline:
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self.mode = mode
-        self.existing_batch_ids = existing_batch_ids or []
         self.active_jobs: List[BatchJob] = []
 
     def _process_input(self, items: List[TextItem]) -> List[TextItem]:
@@ -98,43 +97,11 @@ class Pipeline:
                     raise
                 await asyncio.sleep(self.retry_delay)
 
-    async def process_existing_batches(self) -> None:
-        """Process existing batch jobs without creating new ones"""
-        logger.info(f"Processing {len(self.existing_batch_ids)} existing batch jobs")
-        
-        results = []
-        for batch_id in self.existing_batch_ids:
-            logger.debug(f"Retrieving results for batch {batch_id}")
-            retry_count = 0
-            while retry_count < self.max_retries:
-                batch_results = await self.llm_provider.get_batch_results(batch_id)
-                if batch_results is not None:
-                    logger.info(f"Retrieved {len(batch_results)} results from batch {batch_id}")
-                    results.extend(batch_results)
-                    break
-                logger.debug(f"Batch {batch_id} not ready yet, retrying in {self.retry_delay} seconds")
-                await asyncio.sleep(self.retry_delay)
-                retry_count += 1
-            
-            if retry_count == self.max_retries:
-                logger.warning(f"Failed to retrieve results for batch {batch_id} after {self.max_retries} attempts")
-        
-        if results:
-            processed_results = self._process_output(results)
-            self.output_handler.write(processed_results)
-            logger.info(f"Processed and wrote {len(processed_results)} results from existing batches")
-
     async def run(self) -> None:
         """Run the pipeline"""
-        if not self.categories and not self.existing_batch_ids:
-            raise ValueError("Either categories or existing batch IDs must be specified")
-        
-        # If we have existing batch IDs, process those first
-        if self.existing_batch_ids:
-            await self.process_existing_batches()
-            # If we only want to process existing batches, return early
-            if not self.input_handler or self.mode != "batch":
-                return
+        # Topic categories are necessary for any post processing
+        if not self.categories:
+            raise ValueError("Topic categories must be specified")
         
         # Continue with normal pipeline processing if input handler is provided
         if self.input_handler:
