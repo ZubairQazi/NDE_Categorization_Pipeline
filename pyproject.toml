@@ -8,4 +8,22 @@ version = "0.1.0"
 dependencies = [
     "openai",
     "tiktoken",
-] 
+    "pandas",
+    "tqdm",
+    "numpy",
+    "pathlib",
+    "Levenshtein",
+    "asyncio",
+    "huggingface_hub",
+    "transformers",
+    "torch",
+    "bitsandbytes",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "black",
+    "isort",
+    "flake8",
+]
