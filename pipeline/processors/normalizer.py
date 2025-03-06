@@ -193,10 +193,6 @@ class Normalizer(DataProcessor):
                 # Normalize predictions
                 predictions = self.split_topics(predictions)
 
-                # TODO: Remove after testing synonym matching
-                predictions.append('Gastrointestinal disorders')
-                predictions.append('Antomy')
-
                 predictions = self.clean_and_split(predictions)
                 predictions = self.process_predictions(predictions)
                 result.categories = predictions
