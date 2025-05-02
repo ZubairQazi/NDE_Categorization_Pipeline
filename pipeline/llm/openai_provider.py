@@ -169,20 +169,20 @@ class OpenAIProvider(LLMProvider):
             logger.error(f"Error retrieving batch results: {e}")
             return None
 
-    async def categorize(self, items: List[TextItem], categories: List[str]) -> List[CategoryResult]:
+    def categorize(self, items: List[TextItem], categories: List[str]) -> List[CategoryResult]:
         """Synchronously categorize items using OpenAI API"""
         results = []
         for item in items:
             try:
-                response = await self.client.chat.completions.create(
+                response = self.client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "user", "content": item.text}],
                     max_tokens=self.max_tokens,
                     logprobs=True  # Request logprobs
                 )
                 
-                # Extract logprobs if available
-                logprobs = response.choices[0].get('logprobs', None)
+                # # Extract logprobs if available
+                # logprobs = response.choices[0].get('logprobs', None)
                 
                 result = CategoryResult(
                     id=item.id,
@@ -191,7 +191,7 @@ class OpenAIProvider(LLMProvider):
                         "raw_response": response.choices[0].message.content,
                         "model_name": response.model
                     },
-                    confidence_scores=logprobs,  # Add logprobs as confidence scores
+                    confidence_scores=None,
                     processed_at=datetime.now()
                 )
                 results.append(result)

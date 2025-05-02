@@ -58,7 +58,6 @@ class Pipeline:
         processed_items = self._process_input(items)
         
         # Print items that were filtered out during processing
-        # TODO: Add warning log
         filtered_ids = set(item.id for item in items) - set(item.id for item in processed_items)
         if filtered_ids:
             logger.info(f"Items filtered during processing: {filtered_ids}")
@@ -70,7 +69,7 @@ class Pipeline:
             try:
                 if self.mode == "sync":
                     # Process synchronously
-                    results = await self.llm_provider.categorize(processed_items, self.categories)
+                    results = self.llm_provider.categorize(processed_items, self.categories)
                 else:
                     # Process as batch
                     ids = [item.id for item in processed_items]

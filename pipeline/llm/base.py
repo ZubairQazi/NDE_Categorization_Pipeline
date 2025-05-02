@@ -5,7 +5,7 @@ from ..core.data_model import TextItem, CategoryResult, BatchJob
 
 class LLMProvider(ABC):
     @abstractmethod
-    async def categorize(self, items: List[TextItem], categories: List[str]) -> List[CategoryResult]:
+    def categorize(self, items: List[TextItem], categories: List[str]) -> List[CategoryResult]:
         """Synchronously categorize items"""
         pass
 
