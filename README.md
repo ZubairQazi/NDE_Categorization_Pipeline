@@ -96,6 +96,7 @@ The column mappings configuration is defined in a JSON file located at `pipeline
 The JSON file contains mappings for different datasets. Each dataset configuration includes:
 
 - **text_columns**: A list of columns that contain the primary text data to be processed.
+- **id_column**: The name of the column to use as the unique identifier for each item. If not specified or if the column doesn't exist, sequential IDs will be generated automatically.
 - **metadata_mapping**: A dictionary that maps the metadata fields in your dataset to the expected field names used in the pipeline. Expected field names are dependant upon your specific implementation.
 
 Here's an example of the column mappings configuration:
@@ -104,14 +105,15 @@ Here's an example of the column mappings configuration:
 {
   "zenodo": {
     "text_columns": ["Description"],
+    "id_column": "_id",
     "metadata_mapping": {
       "Name": "title",
       "URL": "source_url",
-      "Date": "date",
     }
   },
   "dbGaP": {
     "text_columns": ["description"],
+    "id_column": "_id",
     "metadata_mapping": {
       "name": "title",
       "url": "source_url"
@@ -122,14 +124,18 @@ Here's an example of the column mappings configuration:
 
 ### Using JSON Input with Column Mappings
 
-1. **Prepare Your JSON Dataset**: Ensure your JSON dataset contains the necessary fields as specified in your column mappings configuration. The fields should match the keys defined in the `metadata_mapping`.
+1. **Prepare Your JSON Dataset**: Ensure your JSON dataset contains the necessary fields as specified in your column mappings configuration. The fields should match the keys defined in the `metadata_mapping`. If you want to use a specific column as the ID, make sure it's specified in the `id_column` field of your configuration.
 
 2. **Run the Pipeline Example**: You can run the pipeline example script using the command line. Here's how to specify the dataset and its configuration (matched via dataset name):
    ```bash
    python examples/pipeline_example.py --dataset_path <path_to_your_dataset.json> --dataset_name <your_dataset_name>
    ```
 
-3. **How It Works**: When you run the pipeline with a JSON input, the `JSONInput` class will read the dataset and use the column mappings to extract the relevant text and metadata. The text data will be processed according to the specified `text_columns`, and the metadata will be mapped to the expected fields defined in `metadata_mapping`.
+3. **How It Works**: When you run the pipeline with a JSON input, the `JSONInput` class will:
+   - Use the specified `id_column` if it exists in the dataset
+   - Generate sequential IDs if no `id_column` is specified or if the column doesn't exist
+   - Extract text data according to the specified `text_columns`
+   - Map metadata fields according to the `metadata_mapping`
 
 ### Example of Column Mappings in Action
 
@@ -138,11 +144,13 @@ For instance, if your JSON dataset has the following structure:
 ```json
 [
   {
+    "_id": "study_001",
     "Name": "Sample Study",
     "Description": "This study investigates...",
     "URL": "http://example.com"
   },
   {
+    "_id": "study_002",
     "Name": "Another Study",
     "Description": "This study explores...",
     "URL": "http://example.org"
@@ -150,4 +158,7 @@ For instance, if your JSON dataset has the following structure:
 ]
 ```
 
-The pipeline will extract the `Description` field as the text to be processed and map the `Name` and `URL` fields to `title` and `source_url`, respectively, based on the column mappings configuration.
+The pipeline will:
+- Use the `_id` field as the unique identifier for each item
+- Extract the `Description` field as the text to be processed
+- Map the `Name` and `URL` fields to `title` and `source_url`, respectively, based on the column mappings configuration
