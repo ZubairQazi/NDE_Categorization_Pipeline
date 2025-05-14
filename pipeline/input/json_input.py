@@ -16,6 +16,7 @@ class JSONInput(DataInput):
         filepath: str,
         text_columns: Optional[List[str]] = None,
         metadata_mapping: Optional[Dict[str, str]] = None,
+        id_column: Optional[str] = None,
         text_separator: str = " "
     ):
         """
@@ -26,11 +27,13 @@ class JSONInput(DataInput):
             text_columns: List of columns to combine into the text field
             metadata_mapping: Dict mapping JSON fields to metadata keys
                 e.g. {"name": "title", "url": "source_url"}
+            id_column: Name of the column to use as ID
             text_separator: String to use when joining text fields
         """
         self.filepath = filepath
         self.text_columns = text_columns or ["description"]
         self.metadata_mapping = metadata_mapping or {}
+        self.id_column = id_column
         self.text_separator = text_separator
         self.dataset = self._load_dataset()
 
@@ -58,15 +61,18 @@ class JSONInput(DataInput):
 
     def read(self) -> Iterator[TextItem]:
         """Read JSON file and yield TextItems"""
-        if "_id" not in self.dataset.columns:
-            # Create sequential IDs if none provided
-            self.dataset["_id"] = range(len(self.dataset))
+        if self.id_column and self.id_column in self.dataset.columns:
+            # Use the configured ID column
+            id_series = self.dataset[self.id_column]
+        else:
+            # Create sequential IDs if no ID column is configured or found
+            id_series = pd.Series(range(len(self.dataset)))
         
-        self.dataset["_id"] = self.dataset["_id"].fillna("").astype(str)
+        id_series = id_series.fillna("").astype(str)
         
-        for _, row in self.dataset.iterrows():
+        for idx, row in self.dataset.iterrows():
             yield TextItem(
-                id=row["_id"],
+                id=id_series[idx],
                 text=self._combine_text(row),
                 metadata=self._extract_metadata(row)
             )
