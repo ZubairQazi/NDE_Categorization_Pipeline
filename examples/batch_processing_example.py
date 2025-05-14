@@ -44,13 +44,15 @@ async def main(dataset_path: str, dataset_name: str):
         items = CSVInput(
             filepath=dataset_path,
             text_columns=dataset_config["text_columns"],
-            metadata_mapping=dataset_config["metadata_mapping"]
+            metadata_mapping=dataset_config["metadata_mapping"],
+            id_column=dataset_config.get("id_column")
         ).get_text_items()
     elif dataset_path.lower().endswith('.json'):
         items = JSONInput(
             filepath=dataset_path,
             text_columns=dataset_config["text_columns"],
-            metadata_mapping=dataset_config["metadata_mapping"]
+            metadata_mapping=dataset_config["metadata_mapping"],
+            id_column=dataset_config.get("id_column")
         ).get_text_items()
     else:
         raise ValueError("Unsupported file format. Please provide a CSV or JSON file.")

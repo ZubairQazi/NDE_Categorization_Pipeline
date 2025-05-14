@@ -44,13 +44,15 @@ async def main(
         input_handler = CSVInput(
             filepath=dataset_path,
             text_columns=dataset_config["text_columns"],
-            metadata_mapping=dataset_config["metadata_mapping"]
+            metadata_mapping=dataset_config["metadata_mapping"],
+            id_column=dataset_config.get("id_column")
         )
     elif dataset_path.lower().endswith('.json'):
         input_handler = JSONInput(
             filepath=dataset_path,
             text_columns=dataset_config["text_columns"],
-            metadata_mapping=dataset_config["metadata_mapping"]
+            metadata_mapping=dataset_config["metadata_mapping"],
+            id_column=dataset_config.get("id_column")
         )
     else:
         raise ValueError("Unsupported file format. Please provide a CSV or JSON file.")
@@ -121,7 +123,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the pipeline synchronously with OpenAI")
     parser.add_argument("--dataset_path", required=True, help="Path to the dataset file")
     parser.add_argument("--dataset_name", required=True, help="Name of the dataset configuration")
-    parser.add_argument("--output", help="Custom output file name (without extension)")
+    parser.add_argument("--output", help="Custom output file name")
     
     args = parser.parse_args()
     
