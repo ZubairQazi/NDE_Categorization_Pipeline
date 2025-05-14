@@ -1,6 +1,7 @@
 {
   "zenodo": {
     "text_columns": ["Description"],
+    "id_column": "_id",
     "metadata_mapping": {
       "Name": "title",
       "URL": "source_url"
@@ -8,6 +9,7 @@
   },
   "dbGaP_test": {
     "text_columns": ["description"],
+    "id_column": "_id",
     "metadata_mapping": {
       "name": "title",
       "url": "source_url"
