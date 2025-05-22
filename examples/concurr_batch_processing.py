@@ -10,16 +10,12 @@ async def main():
     # Load configuration
     config = Config("config.json")
     
-    # Get job name from command line or default to test_job
-    job_name = sys.argv[1] if len(sys.argv) > 1 else "test_job"
-    
-    # Initialize OpenAI provider with a per-job database
+    # Initialize provider
     provider = OpenAIProvider(
         api_key=config.openai_api_key,
         org_id=config.openai_org_id,
         project_id=config.openai_project_id,
-        storage_dir="test_storage",
-        job_name=job_name
+        storage_dir="test_storage"
     )
     
     # Load template and topics
@@ -33,28 +29,12 @@ async def main():
     # Load test data
     items = CSVInput('pipeline/tests/data/zenodo.csv', text_columns=["Name", "Description"]).get_text_items()
     
-    # Submit batch with the specified job name
-    batch_ids = await provider.submit_batch(items, formatted_template, job_name)
-    
-    # Monitor job progress
-    while True:
-        status = provider.get_batch_info()
-        completed = sum(1 for b in status if b["status"] == "completed")
-        total_batches = len(status)
-        print(f"Progress: {completed}/{total_batches} batches completed")
-        
-        if all(b["status"] in ["completed", "failed"] for b in status):
-            break
-        
-        await asyncio.sleep(60 * 60 * 6)
-    
-    # Collect results
-    results = []
-    for batch in status:
-        if batch['status'] == 'completed':
-            batch_results = await provider.get_batch_results(batch['batch_id'])
-            if batch_results:
-                results.extend(batch_results)
+    # Submit batch and get results directly
+    results = await provider.batch_categorize(
+        ids=[item.id for item in items],
+        prompts=[formatted_template.replace("<abstract>", item.text) for item in items],
+        batch_name="test_batch"
+    )
     
     print("Test completed. Total results:", len(results))
     return results

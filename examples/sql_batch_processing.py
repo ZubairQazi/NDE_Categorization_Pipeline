@@ -28,26 +28,12 @@ async def main():
     # Load test data
     items = CSVInput('pipeline/tests/data/zenodo.csv', text_columns=["Name", "Description"]).get_text_items()
     
-    # Submit batch with a test job name
-    batch_ids = await provider.submit_batch(items, formatted_template, "test_job")
-    
-    # Monitor job progress
-    while True:
-        status = await provider.get_job_status("test_job")
-        print(f"Progress: {status['completed']}/{status['total_batches']} batches completed")
-        
-        if status['pending'] == 0:
-            break
-        
-        await asyncio.sleep(60 * 60 * 6)
-    
-    # Collect results
-    results = []
-    for batch in status['batches']:
-        if batch['status'] == 'completed':
-            batch_results = await provider.get_batch_results(batch['batch_id'])
-            if batch_results:
-                results.extend(batch_results)
+    # Submit batch and get results directly
+    results = await provider.batch_categorize(
+        ids=[item.id for item in items],
+        prompts=[formatted_template.replace("<abstract>", item.text) for item in items],
+        batch_name="test_batch"
+    )
     
     print("Test completed. Total results:", len(results))
     return results

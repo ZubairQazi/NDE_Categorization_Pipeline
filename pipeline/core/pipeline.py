@@ -76,17 +76,8 @@ class Pipeline:
                     prompts = [item.text for item in processed_items]
                     batch_name = f"batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
                     
-                    batch_ids = await self.llm_provider.batch_categorize(ids, prompts, batch_name)
-                    results = []
-                    
-                    # Wait for batch completion
-                    for batch_id in batch_ids:
-                        while True:
-                            batch_results = await self.llm_provider.get_batch_results(batch_id)
-                            if batch_results is not None:
-                                results.extend(batch_results)
-                                break
-                            await asyncio.sleep(self.retry_delay)
+                    # Submit batch and get results directly
+                    results = await self.llm_provider.batch_categorize(ids, prompts, batch_name)
                 
                 return self._process_output(results)
                 
