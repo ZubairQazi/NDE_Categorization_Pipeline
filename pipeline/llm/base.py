@@ -10,6 +10,6 @@ class LLMProvider(ABC):
         pass
 
     @abstractmethod
-    async def batch_categorize(self, ids: List[str], prompts: List[str], batch_name: str) -> List[str]:
-        """Submit items for batch processing"""
+    async def batch_categorize(self, items: List[TextItem], categories: List[str], batch_name: str) -> List[CategoryResult]:
+        """Submit items for batch processing and return results"""
         pass

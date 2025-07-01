@@ -69,12 +69,22 @@ class OpenAIProvider(LLMProvider):
             },
         }
 
-    async def batch_categorize(self, ids: List[str], prompts: List[str], batch_name: str) -> List[str]:
-        """Submit items for batch processing"""
+    async def batch_categorize(self, items: List[TextItem], categories: List[str], batch_name: str) -> List[CategoryResult]:
+        """Submit items for batch processing and wait for results"""
+        # First check for existing batches
+        existing_batches = self.client.batches.list()
+        if existing_batches:
+            running_batch_count = sum(1 for batch in existing_batches.data 
+                                    if batch.status in ["in_progress", "finalizing", "validating", "cancelling"])
+            if running_batch_count > 0:
+                logger.warning(f"There are {running_batch_count} running batch jobs.")
+                # We'll proceed anyway, but log the warning
+        
         batch_ids = []
+        results = []
         
         # Create batch requests
-        requests = [self._create_batch_request(id, prompt) for id, prompt in zip(ids, prompts)]
+        requests = [self._create_batch_request(item.id, item.text) for item in items]
         
         # Split requests into chunks
         for i, chunk_start in enumerate(range(0, len(requests), self.batch_chunk_size)):
@@ -111,63 +121,62 @@ class OpenAIProvider(LLMProvider):
                 # Cleanup temporary file
                 temp_file.unlink(missing_ok=True)
         
-        return batch_ids
-
-    async def get_batch_results(self, batch_id: str) -> Optional[List[CategoryResult]]:
-        """Retrieve and parse results from a completed batch job"""
-        try:
-            # Get batch status
-            batch = self.client.batches.retrieve(batch_id)
-            
-            if batch.status == "completed":
-                # Get output file content
-                output_file = self.client.files.content(batch.output_file_id)
-                file_lines = output_file.text.strip().split('\n')
-                
-                # Parse JSON lines
-                results = []
-                for line in file_lines:
-                    try:
-                        response_data = json.loads(line)
-                        item_id = response_data['custom_id']
-                        model_response = response_data['response']['body']['choices'][0]['message']['content']
+        # Wait for all batches to complete and collect results
+        for batch_id in batch_ids:
+            while True:
+                try:
+                    # Get batch status
+                    batch = self.client.batches.retrieve(batch_id)
+                    
+                    if batch.status == "completed":
+                        # Get output file content
+                        output_file = self.client.files.content(batch.output_file_id)
+                        file_lines = output_file.text.strip().split('\n')
                         
-                        # Extract model name
-                        model_name = response_data['response']['body'].get('model', self.model)
-                        # Extract logprobs if available
-                        logprobs = response_data['response']['body']['choices'][0].get('logprobs', None)
+                        # Parse JSON lines
+                        for line in file_lines:
+                            try:
+                                response_data = json.loads(line)
+                                item_id = response_data['custom_id']
+                                model_response = response_data['response']['body']['choices'][0]['message']['content']
+                                
+                                # Extract model name
+                                model_name = response_data['response']['body'].get('model', self.model)
+                                # Extract logprobs if available
+                                logprobs = response_data['response']['body']['choices'][0].get('logprobs', None)
+                                
+                                # Create CategoryResult object
+                                result = CategoryResult(
+                                    id=item_id,
+                                    categories=[],  # Will be parsed from model_response
+                                    model_response={
+                                        "raw_response": model_response,
+                                        "model_name": model_name
+                                    },
+                                    confidence_scores=logprobs,  # Add logprobs as confidence scores
+                                    processed_at=datetime.now()
+                                )
+                                results.append(result)
+                                
+                            except (json.JSONDecodeError, KeyError) as e:
+                                logger.error(f"Error parsing response line: {e}")
+                                continue
+                        break
                         
-                        # Create CategoryResult object
-                        result = CategoryResult(
-                            id=item_id,
-                            categories=[],  # Will be parsed from model_response
-                            model_response={
-                                "raw_response": model_response,
-                                "model_name": model_name
-                            },
-                            confidence_scores=logprobs,  # Add logprobs as confidence scores
-                            processed_at=datetime.now()
-                        )
-                        results.append(result)
+                    elif batch.status in ["failed", "cancelled"]:
+                        logger.error(f"Batch {batch_id} {batch.status}")
+                        break
                         
-                    except (json.JSONDecodeError, KeyError) as e:
-                        logger.error(f"Error parsing response line: {e}")
-                        continue
-                
-                return results
-                
-            elif batch.status in ["failed", "cancelled"]:
-                logger.error(f"Batch {batch_id} {batch.status}")
-                return None
-                
-            else:
-                # Batch still processing
-                logger.info(f"Batch {batch_id} still {batch.status}")
-                return None
-                
-        except Exception as e:
-            logger.error(f"Error retrieving batch results: {e}")
-            return None
+                    else:
+                        # Batch still processing
+                        logger.info(f"Batch {batch_id} still {batch.status}")
+                        await asyncio.sleep(5)  # Wait before checking again
+                        
+                except Exception as e:
+                    logger.error(f"Error retrieving batch results: {e}")
+                    break
+        
+        return results
 
     def categorize(self, items: List[TextItem], categories: List[str]) -> List[CategoryResult]:
         """Synchronously categorize items using OpenAI API"""

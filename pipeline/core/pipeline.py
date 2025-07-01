@@ -72,12 +72,8 @@ class Pipeline:
                     results = self.llm_provider.categorize(processed_items, self.categories)
                 else:
                     # Process as batch
-                    ids = [item.id for item in processed_items]
-                    prompts = [item.text for item in processed_items]
                     batch_name = f"batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                    
-                    # Submit batch and get results directly
-                    results = await self.llm_provider.batch_categorize(ids, prompts, batch_name)
+                    results = await self.llm_provider.batch_categorize(processed_items, self.categories, batch_name)
                 
                 return self._process_output(results)
                 
