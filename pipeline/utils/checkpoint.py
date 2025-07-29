@@ -87,7 +87,7 @@ class SyncCheckpointer:
             self.total_results = total_results
 
             logger.info(
-                f"💾 Checkpoint saved: {processed_count} processed, {total_results} results"
+                f"Checkpoint saved: {processed_count} processed, {total_results} results"
             )
 
         except Exception as e:

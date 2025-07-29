@@ -276,7 +276,6 @@ class Pipeline:
                 self.checkpointer.save_checkpoint(
                     pending_items=[],
                     processed_count=processed_items,
-                    batch_count=batch_count,
                     total_results=total_results,
                     additional_state={"completed": True},
                 )
