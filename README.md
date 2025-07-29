@@ -4,9 +4,93 @@
 
 This project is a data processing pipeline designed to categorize scientific datasets using large language models. It includes components for data input, processing, and output, allowing users to efficiently manage and analyze their data.
 
-## Initial Setup
+The pipeline utilizes base classes for input, processing, categorization, and output, maintaining a high level of flexibility and extensibility that allows users to customize and adapt components to their specific needs.
 
-To set up the project, follow these steps:
+## Processing Modes
+
+The pipeline offers two distinct processing modes to accommodate different use cases and reliability requirements:
+
+### Sync Mode with Checkpointing
+
+Sync mode processes records individually in real-time with built-in checkpointing and crash recovery capabilities. This mode is ideal for:
+- Long-running processing jobs that need reliability
+- Scenarios where you want to see progress and results in real-time
+- Cases where you need to resume processing after interruptions
+
+#### Key Features:
+- **Record-by-record processing**: Each item is processed individually, not in batches
+- **Automatic checkpointing**: Save progress every N records (configurable)
+- **Crash recovery**: Resume from the last checkpoint if processing is interrupted
+- **Real-time output**: Results are written immediately as they're processed
+- **Progress tracking**: Live progress updates with ETA estimates
+
+#### Usage Examples:
+
+**Basic sync mode**:
+```bash
+python nde_pipeline_topic_categories.py --mode sync --dataset_path data.json --dataset_name zenodo
+```
+
+**With custom checkpoint interval** (checkpoint every 25 records):
+```bash
+python nde_pipeline_topic_categories.py --mode sync --dataset_path data.json --dataset_name zenodo --checkpoint_interval 25
+```
+
+**Resume from checkpoint**:
+```bash
+python nde_pipeline_topic_categories.py --mode sync --resume --session_id sync_20240728_143022
+```
+
+**List available checkpoint sessions**:
+```bash
+python nde_pipeline_topic_categories.py --list_sessions
+```
+
+#### Checkpoint Management:
+- Checkpoints are automatically saved to the `checkpoints/` directory
+- Each session gets a unique ID (e.g., `sync_20240728_143022`)
+- Checkpoint files include:
+  - `{session_id}_state.json`: Processing state and metadata
+  - `{session_id}_items.pkl`: Remaining items to process
+  - `{session_id}_results.json`: Intermediate results for recovery
+- Automatic cleanup of checkpoint files after successful completion
+
+### Batch Mode
+
+Batch mode uses the OpenAI Batch API for cost-effective processing of large datasets:
+- Submit all items as a single batch job
+- Monitor batch status until completion
+- Retrieve results when the batch is finished
+- More cost-effective for large volumes but less real-time feedback
+
+#### Usage Example:
+```bash
+python nde_pipeline_topic_categories.py --mode batch --dataset_path data.json --dataset_name zenodo
+```
+
+## Command Line Options
+
+### Core Options:
+- `--mode {sync,batch}`: Choose processing mode (default: batch)
+- `--dataset_path`: Path to your dataset file
+- `--dataset_name`: Dataset configuration name from column mappings
+- `--output`: Custom output filename
+
+### Sync Mode & Checkpointing:
+- `--enable_checkpointing` / `--disable_checkpointing`: Control checkpointing (enabled by default)
+- `--checkpoint_interval N`: Save checkpoint every N records (default: 10)
+- `--session_id`: Custom session ID for checkpointing
+- `--resume`: Resume from checkpoint using session_id
+- `--list_sessions`: List all available checkpoint sessions
+
+### Batch Processing:
+- `--batch_ids`: List of existing batch IDs to process
+- `--batch_file`: File containing batch IDs (one per line)
+- `--check_interval`: Minutes between batch status checks (default: 30)
+
+## Quick Start
+
+### Installation
 
 1. **Clone the Repository**:
    ```bash
@@ -21,42 +105,68 @@ To set up the project, follow these steps:
    ```
 
 3. **Install Dependencies**:
-   Use the following command to install the project in editable mode:
    ```bash
    pip install -e .
    ```
 
-   This command installs all required dependencies specified in the `pyproject.toml` file.
+### Basic Usage
 
-## Running the Pipeline Example
+**Sync Mode** (recommended for most use cases):
+```bash
+python nde_pipeline_topic_categories.py --mode sync --dataset_path data.json --dataset_name zenodo --output results.json
+```
 
-The pipeline example demonstrates how to run the data processing pipeline with a dataset. Here's how to use it:
+**Batch Mode** (for cost optimization):
+```bash
+python nde_pipeline_topic_categories.py --mode batch --dataset_path data.json --dataset_name zenodo --output results.json
+```
 
-1. **Prepare Your Dataset**:
-   Ensure your dataset is in either CSV or JSON format. The dataset should contain the necessary fields as specified in your configuration. For more information on how the pipeline handles input data, refer to the [Input Handling](#input-handling) section. 
+## Data Preparation
 
-2. **Run the Pipeline Example**:
-   You can run the pipeline example script using the command line. Here's the basic usage:
-   ```bash
-   python examples/pipeline_example.py --dataset_path <path_to_your_dataset> --dataset_name <your_dataset_name>
-   ```
+Your dataset should be in JSON or CSV format. The pipeline uses column mappings to understand your data structure.
 
-   You can also specify an output filename:
-   ```bash
-   python examples/pipeline_example.py --dataset_path <path_to_your_dataset> --dataset_name <your_dataset_name> --output <custom_output_name>
-   ```
+### Column Mappings Configuration
 
-3. **Batch Processing**:
-   If you want to process existing/completed batch IDs, you can do so by providing the batch IDs directly or from a file:
-   ```bash
-   python examples/pipeline_example.py --batch_ids <batch_id1> <batch_id2> --output <custom_output_name>
-   ```
-   or
-   ```bash
-   python examples/pipeline_example.py --batch_file <path_to_batch_ids_file> --output <custom_output_name>
-   ```
+The column mappings are defined in `pipeline/utils/configs/column_mappings.json`. This file specifies how to extract information from your dataset:
 
-### How the Pipeline Works
+- **text_columns**: Columns containing the text to be processed
+- **id_column**: Column to use as unique identifier (auto-generated if not specified)
+- **metadata_mapping**: Maps your dataset fields to expected field names
+
+Example configuration:
+```json
+{
+  "zenodo": {
+    "text_columns": ["Description"],
+    "id_column": "_id",
+    "metadata_mapping": {
+      "Name": "title",
+      "URL": "source_url"
+    }
+  }
+}
+```
+
+### Dataset Example
+
+Your JSON dataset should look like this:
+```json
+[
+  {
+    "_id": "study_001",
+    "Name": "Sample Study",
+    "Description": "This study investigates...",
+    "URL": "http://example.com"
+  }
+]
+```
+
+The pipeline will:
+- Use `_id` as the unique identifier
+- Process the `Description` field
+- Map `Name` → `title` and `URL` → `source_url`
+
+## How the Pipeline Works
 
 The pipeline is designed to be modular and flexible, allowing for various components to work together seamlessly. Here's a general overview of how the pipeline operates:
 
@@ -72,93 +182,67 @@ The pipeline is designed to be modular and flexible, allowing for various compon
 
 By utilizing base classes for input, processing, categorization, and output, the pipeline maintains a high level of flexibility and extensibility, allowing users to customize and adapt the components to their specific needs.
 
-### Example of Batch Processing
+## Advanced Usage
 
-In the `batch_processing_example.py`, the script demonstrates how to load a dataset, format prompts, and submit them for batch processing. Here's a brief overview of the steps:
+### Example Workflows
 
-1. **Load Configurations**: The script loads the necessary configurations and mappings for the dataset.
-2. **Check Existing Batches**: It checks if there are any existing batches to process.
-3. **Load Data**: The script loads the dataset using either `CSVInput` or `JSONInput`.
-4. **Prepare Prompts**: It formats the prompts for each item based on the loaded template.
-5. **Submit Batches**: The formatted prompts are submitted to the OpenAI API for processing.
-6. **Monitor Results**: The script monitors the batch processing and logs the results.
+**Processing a large research dataset with checkpointing**:
+```bash
+# Start processing with conservative checkpoint interval
+python nde_pipeline_topic_categories.py --mode sync \
+  --dataset_path research_papers.json \
+  --dataset_name zenodo \
+  --checkpoint_interval 200 \
+  --output results/research_categorized.json
 
-## Input Handling
-
-The pipeline reads data from the specified dataset file using either `CSVInput` or `JSONInput`, depending on the file format. You can also implement your own class for a different file format using `DataInput`. The input handling is designed to work with specific column mappings that define how to extract relevant information from your dataset.
-
-### Column Mappings Configuration
-
-The column mappings configuration is defined in a JSON file located at `pipeline/utils/configs/column_mappings.json`. This file specifies the structure of your dataset and how to map its fields to the expected input for the pipeline.
-
-#### Structure of the Column Mappings JSON
-
-The JSON file contains mappings for different datasets. Each dataset configuration includes:
-
-- **text_columns**: A list of columns that contain the primary text data to be processed.
-- **id_column**: The name of the column to use as the unique identifier for each item. If not specified or if the column doesn't exist, sequential IDs will be generated automatically.
-- **metadata_mapping**: A dictionary that maps the metadata fields in your dataset to the expected field names used in the pipeline. Expected field names are dependant upon your specific implementation.
-
-Here's an example of the column mappings configuration:
-
-```json
-{
-  "zenodo": {
-    "text_columns": ["Description"],
-    "id_column": "_id",
-    "metadata_mapping": {
-      "Name": "title",
-      "URL": "source_url",
-    }
-  },
-  "dbGaP": {
-    "text_columns": ["description"],
-    "id_column": "_id",
-    "metadata_mapping": {
-      "name": "title",
-      "url": "source_url"
-    }
-  }
-}
+# If interrupted, resume from checkpoint
+python nde_pipeline_topic_categories.py --mode sync \
+  --resume --session_id sync_20240728_143022
 ```
 
-### Using JSON Input with Column Mappings
-
-1. **Prepare Your JSON Dataset**: Ensure your JSON dataset contains the necessary fields as specified in your column mappings configuration. The fields should match the keys defined in the `metadata_mapping`. If you want to use a specific column as the ID, make sure it's specified in the `id_column` field of your configuration.
-
-2. **Run the Pipeline Example**: You can run the pipeline example script using the command line. Here's how to specify the dataset and its configuration (matched via dataset name):
-   ```bash
-   python examples/pipeline_example.py --dataset_path <path_to_your_dataset.json> --dataset_name <your_dataset_name>
-   ```
-
-3. **How It Works**: When you run the pipeline with a JSON input, the `JSONInput` class will:
-   - Use the specified `id_column` if it exists in the dataset
-   - Generate sequential IDs if no `id_column` is specified or if the column doesn't exist
-   - Extract text data according to the specified `text_columns`
-   - Map metadata fields according to the `metadata_mapping`
-
-### Example of Column Mappings in Action
-
-For instance, if your JSON dataset has the following structure:
-
-```json
-[
-  {
-    "_id": "study_001",
-    "Name": "Sample Study",
-    "Description": "This study investigates...",
-    "URL": "http://example.com"
-  },
-  {
-    "_id": "study_002",
-    "Name": "Another Study",
-    "Description": "This study explores...",
-    "URL": "http://example.org"
-  }
-]
+**Quick processing for testing**:
+```bash
+# Use batch mode for quick, small datasets
+python nde_pipeline_topic_categories.py --mode batch \
+  --dataset_path test_data.json \
+  --dataset_name zenodo \
+  --output results/test_results.json
 ```
 
-The pipeline will:
-- Use the `_id` field as the unique identifier for each item
-- Extract the `Description` field as the text to be processed
-- Map the `Name` and `URL` fields to `title` and `source_url`, respectively, based on the column mappings configuration
+### Best Practices
+
+#### Choosing the Right Processing Mode
+
+**Use Sync Mode when**:
+- Processing large datasets that may take hours or days
+- You need real-time progress feedback and results
+- Reliability and crash recovery are important
+- You want to process and save results incrementally
+- You're running on unreliable infrastructure
+
+**Use Batch Mode when**:
+- You have a stable environment and processing time is predictable
+- Cost optimization is a primary concern (batch API is more cost-effective)
+- You can wait for all results at once
+- The dataset size is manageable (completes within reasonable time)
+
+#### Checkpoint Interval Guidelines
+
+- **Small datasets (< 1000 records)**: Use `--checkpoint_interval 50-100`
+- **Medium datasets (1000-10000 records)**: Use `--checkpoint_interval 100-500`  
+- **Large datasets (> 10000 records)**: Use `--checkpoint_interval 500-1000`
+
+Smaller intervals provide better crash recovery but create more I/O overhead. Larger intervals are more efficient but mean losing more progress if interrupted.
+
+#### Recovery and Monitoring
+
+**Monitor progress** during long-running jobs:
+```bash
+# Check checkpoint sessions
+python nde_pipeline_topic_categories.py --list_sessions
+
+# Resume if needed
+python nde_pipeline_topic_categories.py --mode sync --resume --session_id <session_id>
+```
+
+**Automatic cleanup**: Checkpoint files are automatically cleaned up after successful completion. To keep them for debugging, use a custom checkpointer configuration.
