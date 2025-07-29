@@ -1,22 +1,24 @@
-from typing import List, Optional, Dict, Any, Tuple
-from datetime import datetime
-import logging
 import asyncio
+import logging
 import os
-import torch
-from pathlib import Path
 import re
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
-from ..core.data_model import TextItem, CategoryResult, BatchJob, JobStatus
+import torch
+
+from ..core.data_model import BatchJob, CategoryResult, JobStatus, TextItem
 from .base import LLMProvider
 
 logger = logging.getLogger(__name__)
 
+
 class HFLocalModel:
     """Handles local HuggingFace model inference"""
-    
+
     def __init__(
-        self, 
+        self,
         model_name_or_path: str,
         device: str = None,
         torch_dtype: str = "auto",
@@ -25,10 +27,10 @@ class HFLocalModel:
         max_new_tokens: int = 512,
         temperature: float = 0.1,
         top_p: float = 0.95,
-        cache_dir: str = None
+        cache_dir: str = None,
     ):
         """Initialize a local HuggingFace model.
-        
+
         Args:
             model_name_or_path: Name or path of the model to load
             device: Device to run the model on (e.g., "cuda", "cpu", "cuda:0")
@@ -41,22 +43,36 @@ class HFLocalModel:
             cache_dir: Directory to cache downloaded models
         """
         try:
-            from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+            from transformers import (
+                AutoModelForCausalLM,
+                AutoTokenizer,
+                BitsAndBytesConfig,
+            )
         except ImportError:
             raise ImportError(
                 "The transformers package is required to use the HuggingFace local provider. "
                 "Please install it with `pip install transformers`"
             )
-            
-        # Determine device
+
+        # Determine device with Metal support for Apple Silicon
         if device is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+            if torch.cuda.is_available():
+                device = "cuda"
+            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                device = "mps"  # Metal Performance Shaders for Apple Silicon
+            else:
+                device = "cpu"
         self.device = device
-        
+        logger.info(f"Using device: {device}")
+
         # Determine dtype
         if torch_dtype == "auto":
-            if "cuda" in device and torch.cuda.is_available():
+            if device == "cuda" and torch.cuda.is_available():
                 torch_dtype = torch.float16
+            elif device == "mps":
+                torch_dtype = (
+                    torch.float32
+                )  # MPS doesn't support float16 well for all ops
             else:
                 torch_dtype = torch.float32
         elif torch_dtype == "float16":
@@ -65,93 +81,105 @@ class HFLocalModel:
             torch_dtype = torch.bfloat16
         elif torch_dtype == "float32":
             torch_dtype = torch.float32
-        
-        # Configure quantization if needed
+
+        # Configure quantization if needed (note: quantization may not work on MPS)
         quantization_config = None
         if load_in_8bit or load_in_4bit:
-            try:
-                import bitsandbytes
-                quantization_config = BitsAndBytesConfig(
-                    load_in_8bit=load_in_8bit,
-                    load_in_4bit=load_in_4bit
+            if device == "mps":
+                logger.warning(
+                    "Quantization not supported on MPS. Falling back to full precision."
                 )
-            except ImportError:
-                logger.warning("bitsandbytes not installed. Falling back to full precision.")
-        
+            else:
+                try:
+                    import bitsandbytes
+
+                    quantization_config = BitsAndBytesConfig(
+                        load_in_8bit=load_in_8bit, load_in_4bit=load_in_4bit
+                    )
+                except ImportError:
+                    logger.warning(
+                        "bitsandbytes not installed. Falling back to full precision."
+                    )
+
         # Load tokenizer and model
-        logger.info(f"Loading model {model_name_or_path} on {device} with dtype {torch_dtype}")
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            model_name_or_path,
-            cache_dir=cache_dir
+        logger.info(
+            f"Loading model {model_name_or_path} on {device} with dtype {torch_dtype}"
         )
-        
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model_name_or_path, cache_dir=cache_dir
+        )
+
+        # Handle device mapping for different devices
+        if device == "cuda":
+            device_map = "auto"  # Let transformers handle CUDA device mapping
+        elif device == "mps":
+            device_map = None  # MPS doesn't support device_map, we'll move manually
+        else:
+            device_map = None
+
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name_or_path,
             torch_dtype=torch_dtype,
             quantization_config=quantization_config,
-            device_map=device if "cuda" in device else None,
-            cache_dir=cache_dir
+            device_map=device_map,
+            cache_dir=cache_dir,
+            # Removed attn_implementation since Ampere GPU supports FlashAttention
         )
-        
-        if "cpu" in device:
+
+        # Move model to device if not using device_map
+        if device_map is None:
             self.model = self.model.to(device)
-        
+
         # Set generation parameters
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
         self.top_p = top_p
-        
-        logger.info(f"Model loaded successfully")
 
-    async def generate(self, prompt: str) -> str:
+        logger.info(f"Model loaded successfully on {device}")
+
+    def generate(self, prompt: str) -> str:
         """Generate text using the local model.
-        
+
         Args:
             prompt: The prompt to send to the model
-            
+
         Returns:
             The generated text response
         """
         try:
-            # Run in a separate thread to avoid blocking the event loop
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None, self._generate_sync, prompt
+            logger.debug(f"Tokenizing prompt ({len(prompt)} characters)...")
+            inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+            input_length = inputs["input_ids"].shape[1]
+            logger.debug(
+                f"Input tokens: {input_length}, generating up to {self.max_new_tokens} new tokens..."
             )
-            return response
-            
+
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **inputs,
+                    max_new_tokens=self.max_new_tokens,
+                    temperature=self.temperature,
+                    top_p=self.top_p,
+                    do_sample=self.temperature > 0,
+                )
+
+            output_length = outputs[0].shape[0]
+            generated_tokens = output_length - input_length
+            logger.debug(f"Generated {generated_tokens} tokens")
+
+            # Decode the generated tokens
+            response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+            # Remove the prompt from the response
+            if response.startswith(prompt):
+                response = response[len(prompt) :]
+
+            return response.strip()
+
         except Exception as e:
             logger.error(f"Error generating text: {e}")
             raise
-    
-    def _generate_sync(self, prompt: str) -> str:
-        """Synchronous version of generate for use with run_in_executor.
-        
-        Args:
-            prompt: The prompt to send to the model
-            
-        Returns:
-            The generated text response
-        """
-        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
-        
-        with torch.no_grad():
-            outputs = self.model.generate(
-                **inputs,
-                max_new_tokens=self.max_new_tokens,
-                temperature=self.temperature,
-                top_p=self.top_p,
-                do_sample=self.temperature > 0,
-            )
-        
-        # Decode the generated tokens
-        response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-        
-        # Remove the prompt from the response
-        if response.startswith(prompt):
-            response = response[len(prompt):]
-            
-        return response.strip()
+
 
 class HFLocalProvider(LLMProvider):
     """HuggingFace local model provider"""
@@ -169,10 +197,10 @@ class HFLocalProvider(LLMProvider):
         top_p: float = 0.95,
         max_retries: int = 3,
         retry_delay: int = 5,
-        cache_dir: str = None
+        cache_dir: str = None,
     ):
         """Initialize the HuggingFace local provider.
-        
+
         Args:
             model_name_or_path: Name or path of the model to load
             prompt_template: Template for formatting prompts
@@ -196,81 +224,121 @@ class HFLocalProvider(LLMProvider):
             max_new_tokens=max_new_tokens,
             temperature=temperature,
             top_p=top_p,
-            cache_dir=cache_dir
+            cache_dir=cache_dir,
         )
         self.prompt_template = prompt_template
         self.max_retries = max_retries
         self.retry_delay = retry_delay
-        
+
         # Store batch jobs in memory
         self._batch_jobs: Dict[str, BatchJob] = {}
 
-    async def categorize(self, items: List[TextItem], categories: List[str]) -> List[CategoryResult]:
-        """Categorize items synchronously.
-        
+    def categorize(
+        self, items: List[TextItem], categories: List[str]
+    ) -> List[CategoryResult]:
+        """Categorize items synchronously (as required by base class).
+
         Args:
             items: List of items to categorize
             categories: List of valid categories
-            
+
         Returns:
             List of categorization results
         """
         results = []
-        for item in items:
+        total_items = len(items)
+        logger.info(f"Starting categorization of {total_items} items...")
+
+        for i, item in enumerate(items, 1):
+            logger.info(f"Processing item {i}/{total_items} (ID: {item.id})")
             # TODO: Check already formatted by the PromptFormatter preprocessor
             prompt = item.text
-            
+
             for attempt in range(self.max_retries):
                 try:
-                    response = await self.model.generate(prompt)
-                    
+                    logger.debug(
+                        f"Generating text for item {item.id}, attempt {attempt + 1}"
+                    )
+                    response = self.model.generate(prompt)
+                    logger.info(
+                        f"✓ Generated response for item {item.id} ({len(response)} chars)"
+                    )
+
+                    # Parse the response to extract categories
+                    # For now, just store the raw response
                     results.append(
                         CategoryResult(
                             id=item.id,
-                            categories=[],
+                            categories=[],  # You may want to parse this from the response
                             model_response={"raw_response": response},
-                            processed_at=datetime.now()
+                            processed_at=datetime.now(),
                         )
                     )
                     break
-                    
+
                 except Exception as e:
                     if attempt == self.max_retries - 1:
-                        logger.error(f"Failed to categorize item {item.id} after {self.max_retries} attempts: {e}")
-                        raise
-                    await asyncio.sleep(self.retry_delay)
-                    
+                        logger.error(
+                            f"Failed to categorize item {item.id} after {self.max_retries} attempts: {e}"
+                        )
+                        # Add a failed result instead of raising
+                        results.append(
+                            CategoryResult(
+                                id=item.id,
+                                categories=[],
+                                model_response={"error": str(e)},
+                                processed_at=datetime.now(),
+                            )
+                        )
+                        break
+                    else:
+                        logger.warning(
+                            f"Attempt {attempt + 1} failed for item {item.id}: {e}. Retrying..."
+                        )
+                    import time
+
+                    time.sleep(self.retry_delay)
+
+        logger.info(
+            f"Completed categorization of {total_items} items. {len([r for r in results if 'error' not in r.model_response])} successful, {len([r for r in results if 'error' in r.model_response])} failed."
+        )
         return results
 
-    async def batch_categorize(self, ids: List[str], prompts: List[str], batch_name: str) -> List[str]:
+    async def batch_categorize(
+        self, ids: List[str], prompts: List[str], batch_name: str
+    ) -> List[str]:
         """Submit a batch of prompts for categorization.
-        
+
         Args:
             ids: List of item IDs
             prompts: List of prompts to categorize
             batch_name: Name of the batch
-            
+
         Returns:
             List of batch job IDs
         """
         # Create a batch job
         job_id = f"{batch_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        
+
         # Create TextItems from the IDs and prompts
         items = [TextItem(id=id, text=prompt) for id, prompt in zip(ids, prompts)]
-        
+
         # Submit the batch
-        job = await self.submit_batch(items, [])  # Categories will be extracted from prompts
-        
+        job = await self.submit_batch(
+            items, []
+        )  # Categories will be extracted from prompts
+
         return [job.job_id]
 
-    async def submit_batch(self, items: List[TextItem], categories: List[str]) -> BatchJob:
+    async def submit_batch(
+        self, items: List[TextItem], categories: List[str]
+    ) -> BatchJob:
         """Submit items for batch processing.
-        
+
         Args:
             items: List of items to process
             categories: List of valid categories
-            
+
         Returns:
             BatchJob object representing the submitted job
         """
@@ -279,35 +347,35 @@ class HFLocalProvider(LLMProvider):
             job_id=f"batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
             status=JobStatus.PENDING,
             items=items,
-            created_at=datetime.now()
+            created_at=datetime.now(),
         )
-        
+
         # Store the job
         self._batch_jobs[job.job_id] = job
-        
+
         # Process the batch asynchronously
         asyncio.create_task(self._process_batch(job, categories))
-        
+
         return job
 
     async def _process_batch(self, job: BatchJob, categories: List[str]) -> None:
         """Process a batch job asynchronously.
-        
+
         Args:
             job: The batch job to process
             categories: List of valid categories
         """
         job.status = JobStatus.IN_PROGRESS
-        
+
         try:
             # Process items in the batch
-            results = await self.categorize(job.items, categories)
-            
+            results = self.categorize(job.items, categories)
+
             # Update job with results
             job.results = results
             job.status = JobStatus.COMPLETED
             job.completed_at = datetime.now()
-            
+
         except Exception as e:
             logger.error(f"Error processing batch {job.job_id}: {e}")
             job.status = JobStatus.FAILED
@@ -315,10 +383,10 @@ class HFLocalProvider(LLMProvider):
 
     async def get_batch_results(self, job_id: str) -> Optional[List[CategoryResult]]:
         """Get results for a batch job.
-        
+
         Args:
             job_id: ID of the batch job
-            
+
         Returns:
             List of categorization results if the job is complete, None otherwise
         """
@@ -326,10 +394,10 @@ class HFLocalProvider(LLMProvider):
         if not job:
             logger.warning(f"Batch job {job_id} not found")
             return None
-            
+
         if job.status == JobStatus.COMPLETED:
             return job.results
         elif job.status == JobStatus.FAILED:
             raise Exception(f"Batch job {job_id} failed: {job.error_message}")
         else:
-            return None 
+            return None
