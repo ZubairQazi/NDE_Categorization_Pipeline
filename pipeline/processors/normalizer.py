@@ -264,9 +264,10 @@ class Normalizer(DataProcessor):
                     if cat.replace(".", "").replace('"', "") not in hallucinations
                 ]
 
-    def normalize(self, results: List[CategoryResult]) -> None:
+    def normalize(self, results: List[CategoryResult], quiet: bool = False) -> None:
         """Main normalization process for CategoryResult objects."""
-        for result in tqdm(results):
+        iterator = results if quiet else tqdm(results)
+        for result in iterator:
             if result.model_response and "raw_response" in result.model_response:
                 predictions = result.model_response["raw_response"]
                 # Normalize predictions

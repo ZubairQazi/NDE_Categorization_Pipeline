@@ -7,7 +7,7 @@
       "URL": "source_url"
     }
   },
-  "dbGaP_test": {
+  "nde": {
     "text_columns": ["description"],
     "id_column": "_id",
     "metadata_mapping": {

@@ -86,9 +86,9 @@ class SyncCheckpointer:
             self.processed_count = processed_count
             self.total_results = total_results
 
-            logger.info(
-                f"Checkpoint saved: {processed_count} processed, {total_results} results"
-            )
+            # logger.info(
+            #     f"Checkpoint saved: {processed_count} processed, {total_results} results"
+            # )
 
         except Exception as e:
             logger.error(f"Failed to save checkpoint: {e}")
@@ -125,7 +125,7 @@ class SyncCheckpointer:
             with open(self.results_file, "w") as f:
                 json.dump(existing_results, f, indent=2)
 
-            logger.debug(f"Saved {len(new_results)} intermediate results")
+            # logger.debug(f"Saved {len(new_results)} intermediate results")
 
         except Exception as e:
             logger.error(f"Failed to save intermediate results: {e}")
@@ -192,7 +192,7 @@ class SyncCheckpointer:
             for file_path in files_to_remove:
                 if file_path.exists():
                     file_path.unlink()
-                    logger.debug(f"Removed checkpoint file: {file_path}")
+                    # logger.debug(f"Removed checkpoint file: {file_path}")
 
             logger.info(f"Cleaned up checkpoint files for session: {self.session_id}")
 

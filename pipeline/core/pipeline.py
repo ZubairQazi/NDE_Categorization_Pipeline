@@ -1,7 +1,10 @@
 # core/pipeline.py
 import asyncio
+import logging
 from datetime import datetime
 from typing import List, Literal, Optional, Type
+
+from tqdm import tqdm
 
 from ..input.base import DataInput
 from ..llm.base import LLMProvider
@@ -12,6 +15,28 @@ from ..utils.logging import get_logger
 from .data_model import BatchJob, CategoryResult, JobStatus, TextItem
 
 logger = get_logger(__name__)
+
+
+class QuietLogger:
+    """Context manager to temporarily suppress verbose logging during tqdm progress"""
+
+    def __init__(self, loggers_to_quiet: List[str]):
+        self.loggers_to_quiet = loggers_to_quiet
+        self.original_levels = {}
+
+    def __enter__(self):
+        # Save original levels and set to WARNING to suppress INFO messages
+        for logger_name in self.loggers_to_quiet:
+            logger_obj = logging.getLogger(logger_name)
+            self.original_levels[logger_name] = logger_obj.level
+            logger_obj.setLevel(logging.WARNING)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # Restore original logging levels
+        for logger_name in self.loggers_to_quiet:
+            logger_obj = logging.getLogger(logger_name)
+            logger_obj.setLevel(self.original_levels[logger_name])
 
 
 class Pipeline:
@@ -68,15 +93,21 @@ class Pipeline:
             processed_items = processor.process_input(processed_items)
         return processed_items
 
-    def _process_output(self, results: List[CategoryResult]) -> List[CategoryResult]:
+    def _process_output(
+        self, results: List[CategoryResult], quiet: bool = False
+    ) -> List[CategoryResult]:
         """Apply all output processors to the results"""
         processed_results = results
         for processor in self.postprocessors:
-            processed_results = processor.process_output(processed_results)
+            # Handle normalizer specially for quiet mode
+            if quiet and hasattr(processor, "normalize"):
+                processor.normalize(processed_results, quiet=True)
+            else:
+                processed_results = processor.process_output(processed_results)
         return processed_results
 
     async def process_items(
-        self, items: List[TextItem]
+        self, items: List[TextItem], quiet: bool = False
     ) -> Optional[List[CategoryResult]]:
         """Process items based on selected mode"""
         processed_items = self._process_input(items)
@@ -109,7 +140,7 @@ class Pipeline:
                         f"Batch processing completed, received {len(results) if results else 0} results"
                     )
 
-                return self._process_output(results)
+                return self._process_output(results, quiet=quiet)
 
             except Exception as e:
                 if attempt == self.max_retries - 1:
@@ -208,70 +239,102 @@ class Pipeline:
             total_items = (
                 len(all_items) if all_items else processed_items + len(pending_items)
             )
-            logger.info(f"Total items to process: {total_items}")
+            logger.info(f"Processing {total_items} items in sync mode...")
 
-            while remaining_items:
-                current_item = remaining_items.pop(0)
-                processed_items += 1
+            # Initialize progress bar for sync mode
+            pbar = tqdm(
+                total=total_items,
+                initial=processed_items,
+                desc="Processing items",
+                unit="items",
+                ncols=100,
+            )
 
-                # Show progress every 50 records or on checkpoint intervals
-                if processed_items % 50 == 0 or (
-                    self.checkpointer
-                    and self.checkpointer.should_checkpoint(processed_items)
-                ):
-                    progress_msg = f"Processing record {processed_items}/{total_items}"
-                    if self.checkpointer:
-                        progress = self.checkpointer.estimate_progress(total_items)
-                        if "progress_percent" in progress:
-                            progress_msg += f" - {progress['progress_percent']:.1f}% complete, ETA: {progress.get('estimated_remaining_formatted', 'calculating...')}"
-                    logger.info(progress_msg)
+            # Collect results for batch saving to checkpointer
+            pending_checkpoint_results = []
 
-                # Process single item
-                try:
-                    results = await self.process_items([current_item])
-                    if results:
-                        # Save results to output immediately
-                        self.output_handler.write(results)
-                        total_results += len(results)
+            # Use quiet logging during processing to avoid breaking progress bar
+            quiet_loggers = [
+                "pipeline.llm.openai_provider",
+                "pipeline.processors.normalizer",
+                "pipeline.utils.checkpoint",
+            ]
 
-                        # Save intermediate results for recovery
+            with QuietLogger(quiet_loggers):
+                while remaining_items:
+                    current_item = remaining_items.pop(0)
+                    processed_items += 1
+
+                    # Process single item
+                    try:
+                        results = await self.process_items([current_item], quiet=True)
+                        if results:
+                            # Save results to output immediately
+                            self.output_handler.write(results)
+                            total_results += len(results)
+
+                            # Collect results for checkpoint saving (only save in batches)
+                            if self.checkpointer:
+                                pending_checkpoint_results.extend(results)
+
+                        # Update progress bar
+                        pbar.update(1)
+
+                        # Save checkpoint if enabled and it's time
+                        if self.checkpointer and self.checkpointer.should_checkpoint(
+                            processed_items
+                        ):
+                            # Save all pending results to checkpoint
+                            if pending_checkpoint_results:
+                                self.checkpointer.save_intermediate_results(
+                                    pending_checkpoint_results
+                                )
+                                pending_checkpoint_results = []  # Clear after saving
+
+                            self.checkpointer.save_checkpoint(
+                                pending_items=remaining_items,
+                                processed_count=processed_items,
+                                total_results=total_results,
+                            )
+
+                    except Exception as e:
+                        pbar.close()
+                        logger.error(f"Record {processed_items} failed: {e}")
+
+                        # Save emergency checkpoint before retrying or failing
                         if self.checkpointer:
-                            self.checkpointer.save_intermediate_results(results)
+                            # Save any pending results first
+                            if pending_checkpoint_results:
+                                self.checkpointer.save_intermediate_results(
+                                    pending_checkpoint_results
+                                )
 
-                    # Save checkpoint if enabled and it's time
-                    if self.checkpointer and self.checkpointer.should_checkpoint(
-                        processed_items
-                    ):
-                        self.checkpointer.save_checkpoint(
-                            pending_items=remaining_items,
-                            processed_count=processed_items,
-                            total_results=total_results,
-                        )
+                            emergency_pending = [current_item] + remaining_items
+                            self.checkpointer.save_checkpoint(
+                                pending_items=emergency_pending,
+                                processed_count=processed_items
+                                - 1,  # Don't count failed item
+                                total_results=total_results,
+                                additional_state={
+                                    "last_error": str(e),
+                                    "emergency_save": True,
+                                },
+                            )
+                            logger.info("Emergency checkpoint saved before failing")
 
-                except Exception as e:
-                    logger.error(f"Record {processed_items} failed: {e}")
+                        raise
 
-                    # Save emergency checkpoint before retrying or failing
-                    if self.checkpointer:
-                        emergency_pending = [current_item] + remaining_items
-                        self.checkpointer.save_checkpoint(
-                            pending_items=emergency_pending,
-                            processed_count=processed_items
-                            - 1,  # Don't count failed item
-                            total_results=total_results,
-                            additional_state={
-                                "last_error": str(e),
-                                "emergency_save": True,
-                            },
-                        )
-                        logger.info("Emergency checkpoint saved before failing")
-
-                    raise
-
-                    raise
+            # Close progress bar
+            pbar.close()
 
             # Final checkpoint and cleanup
             if self.checkpointer:
+                # Save any remaining results that haven't been checkpointed yet
+                if pending_checkpoint_results:
+                    self.checkpointer.save_intermediate_results(
+                        pending_checkpoint_results
+                    )
+
                 # Save final state
                 self.checkpointer.save_checkpoint(
                     pending_items=[],
@@ -380,7 +443,6 @@ class Pipeline:
             "session_id": self.checkpointer.session_id,
             "checkpoint_interval": self.checkpointer.checkpoint_interval,
             "processed_count": self.checkpointer.processed_count,
-            "batch_count": self.checkpointer.batch_count,
             "total_results": self.checkpointer.total_results,
             "enabled": self.enable_checkpointing,
         }
