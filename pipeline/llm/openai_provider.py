@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -359,48 +360,65 @@ class OpenAIProvider(LLMProvider):
         requests = [self._create_batch_request(item.id, item.text) for item in items]
         logger.info(f"Created {len(requests)} batch requests for {len(items)} items")
 
-        # Split requests into chunks
-        for i, chunk_start in enumerate(range(0, len(requests), self.batch_chunk_size)):
-            chunk = requests[chunk_start : chunk_start + self.batch_chunk_size]
+        # Split requests into chunks respecting both count and size limits
+        chunks = self._split_requests_by_size_and_count(requests, batch_name)
+        logger.info(
+            f"Split into {len(chunks)} chunks (respecting 50K count and 200MB size limits)"
+        )
 
-            # Create JSONL content
-            jsonl_content = "\n".join(json.dumps(request) for request in chunk)
+        chunk_counter = 0
+        for i, chunk in enumerate(chunks):
+            # Process chunk with adaptive splitting for oversized files
+            sub_chunks = self._process_chunk_with_size_validation(
+                chunk, batch_name, chunk_counter
+            )
 
-            # Create temporary file
-            temp_file = Path(f"{batch_name}_{i}.jsonl")
-            temp_file.write_text(jsonl_content)
+            for sub_chunk in sub_chunks:
+                # Create JSONL content
+                jsonl_content = "\n".join(json.dumps(request) for request in sub_chunk)
 
-            try:
-                # Upload file to OpenAI
-                with open(temp_file, "rb") as f:
-                    batch_input_file = self.client.files.create(file=f, purpose="batch")
+                # Create temporary file
+                temp_file = Path(f"{batch_name}_{chunk_counter}.jsonl")
+                temp_file.write_text(jsonl_content)
 
-                # Create batch
-                batch = self.client.batches.create(
-                    input_file_id=batch_input_file.id,
-                    endpoint="/v1/chat/completions",
-                    completion_window=self.completion_window,
-                    metadata={
-                        "description": f"{batch_name} - Chunk {i}",
-                        "chunk_size": str(len(chunk)),
-                        "total_chunks": str(
-                            (len(requests) + self.batch_chunk_size - 1)
-                            // self.batch_chunk_size
-                        ),
-                    },
-                )
-
-                batch_ids.append(batch.id)
+                # Final size check (should always pass now)
+                file_size_mb = os.path.getsize(temp_file) / (1024 * 1024)
                 logger.info(
-                    f"Created batch {batch.id} with {len(chunk)} requests (chunk {i+1})"
+                    f"Chunk {chunk_counter+1}: {len(sub_chunk)} requests, {file_size_mb:.1f} MB"
                 )
 
-            except Exception as e:
-                logger.error(f"Error creating batch chunk {i}: {e}")
-                raise
-            finally:
-                # Cleanup temporary file
-                temp_file.unlink(missing_ok=True)
+                try:
+                    # Upload file to OpenAI
+                    with open(temp_file, "rb") as f:
+                        batch_input_file = self.client.files.create(
+                            file=f, purpose="batch"
+                        )
+
+                    # Create batch
+                    batch = self.client.batches.create(
+                        input_file_id=batch_input_file.id,
+                        endpoint="/v1/chat/completions",
+                        completion_window=self.completion_window,
+                        metadata={
+                            "description": f"{batch_name} - Chunk {chunk_counter}",
+                            "chunk_size": str(len(sub_chunk)),
+                            "total_chunks": str(len(chunks)),
+                        },
+                    )
+
+                    batch_ids.append(batch.id)
+                    logger.info(
+                        f"Created batch {batch.id} with {len(sub_chunk)} requests (chunk {chunk_counter+1})"
+                    )
+
+                except Exception as e:
+                    logger.error(f"Error creating batch chunk {chunk_counter}: {e}")
+                    raise
+                finally:
+                    # Cleanup temporary file
+                    temp_file.unlink(missing_ok=True)
+
+                chunk_counter += 1
 
         # Wait for all batches to complete with progress reporting
         def progress_callback(batch_id: str, details: Dict):
@@ -462,3 +480,69 @@ class OpenAIProvider(LLMProvider):
 
         logger.info(f"✓ Completed processing {len(results)}/{len(items)} items")
         return results
+
+    def _split_requests_by_size_and_count(
+        self, requests: List[dict], batch_name: str, max_size_mb: int = 200
+    ) -> List[List[dict]]:
+        """Split requests into chunks of 50K requests each"""
+        chunks = []
+
+        # Simple chunking by count - size validation happens later
+        for i in range(0, len(requests), self.batch_chunk_size):
+            chunk = requests[i : i + self.batch_chunk_size]
+            chunks.append(chunk)
+
+        logger.info(
+            f"Split {len(requests)} requests into {len(chunks)} chunks of max {self.batch_chunk_size} requests each"
+        )
+        return chunks
+
+    def _process_chunk_with_size_validation(
+        self,
+        chunk: List[dict],
+        batch_name: str,
+        chunk_index: int,
+        max_size_mb: int = 200,
+    ) -> List[List[dict]]:
+        """Process a chunk and split it in half recursively until each sub-chunk is under 200MB"""
+        max_size_bytes = max_size_mb * 1024 * 1024
+
+        # Test the current chunk size
+        jsonl_content = "\n".join(json.dumps(request) for request in chunk)
+        current_size = len(jsonl_content.encode("utf-8"))
+
+        if current_size <= max_size_bytes:
+            # Chunk is fine, return as-is
+            return [chunk]
+
+        # Chunk is too large, split in half
+        logger.warning(
+            f"Chunk {chunk_index} is {current_size / (1024*1024):.1f} MB (>200MB). Splitting in half..."
+        )
+
+        mid_point = len(chunk) // 2
+        if mid_point == 0:
+            # Single request is too large - this shouldn't happen with normal text
+            logger.error(
+                f"Single request is larger than 200MB limit. Skipping request."
+            )
+            return []
+
+        # Split in half and recursively process each half
+        first_half = chunk[:mid_point]
+        second_half = chunk[mid_point:]
+
+        # Recursively process each half
+        sub_chunks = []
+        sub_chunks.extend(
+            self._process_chunk_with_size_validation(
+                first_half, batch_name, chunk_index, max_size_mb
+            )
+        )
+        sub_chunks.extend(
+            self._process_chunk_with_size_validation(
+                second_half, batch_name, chunk_index, max_size_mb
+            )
+        )
+
+        return sub_chunks
