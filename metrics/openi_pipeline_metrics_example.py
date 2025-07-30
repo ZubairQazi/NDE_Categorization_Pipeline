@@ -296,7 +296,7 @@ async def main():
             dataset_name=args.dataset_name,
             output_filename=output_filename,
             model=args.model,
-            mode="sync",  # Force sync mode for dataset processing
+            mode=args.mode,  # Use the actual mode specified by user
         )
     else:
         print("Usage for normal processing:")
