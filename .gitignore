@@ -7,3 +7,6 @@ __pycache__
 results/
 batch_files/
 metrics_output/
+checkpoints/
+logs/
+archive/
